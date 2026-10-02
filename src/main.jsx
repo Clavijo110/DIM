@@ -24,7 +24,7 @@ import {
   upsertCompartments,
   upsertDeviceSettings,
 } from './lib/supabase'
-import { getSlotAngle, isRestrictedNightWindow } from './lib/dispenserLogic'
+import { getSlotAngle, isRestrictedNightWindow, isValidMedicationFrequencyHours } from './lib/dispenserLogic'
 
 const navItems = [
   { id: 'home', label: 'Hoy', icon: Home },
@@ -347,7 +347,7 @@ function App() {
       await notify('Empieza indicando un medicamento y su cantidad en un compartimento.', 'Guía')
       return
     }
-    if (configuredCompartments.some((item) => !Number.isInteger(item.frequencyHours) || item.frequencyHours < 1 || item.frequencyHours > 168)) {
+    if (configuredCompartments.some((item) => !isValidMedicationFrequencyHours(item.frequencyHours))) {
       await notify('Indica un intervalo entero entre 1 y 168 horas para cada medicamento.', 'Guía')
       return
     }

@@ -16,6 +16,11 @@ export function isRestrictedNightWindow(date = new Date()) {
   return hours >= NIGHT_WINDOW_START_HOUR && hours < NIGHT_WINDOW_END_HOUR
 }
 
+export function isValidMedicationFrequencyHours(value) {
+  const hours = Number(value)
+  return Number.isInteger(hours) && hours >= 1 && hours <= 168
+}
+
 export function isSlotAvailable(slotConfig, slotNumber, date = new Date()) {
   const current = Number(slotNumber)
   const exists = slotConfig && Number(slotConfig.slot) === current
