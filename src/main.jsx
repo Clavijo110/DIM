@@ -57,6 +57,7 @@ function App() {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState({ full_name: '', email: '' })
   const [profileSaving, setProfileSaving] = useState(false)
+  const [deviceSettingsSaving, setDeviceSettingsSaving] = useState(false)
   const [authLoading, setAuthLoading] = useState(true)
   const [authError, setAuthError] = useState('')
   const [authMode, setAuthMode] = useState('login')
@@ -279,6 +280,28 @@ function App() {
     await notify('Perfil actualizado correctamente', 'Perfil')
   }
 
+  const saveNightWindow = async ({ nightStart, nightEnd }) => {
+    setDeviceSettingsSaving(true)
+    const result = await upsertDeviceSettings({
+      ...deviceData.device,
+      name: deviceData.device.name || 'Mi dispensador',
+      nightStart,
+      nightEnd,
+    }, user.id)
+    setDeviceSettingsSaving(false)
+
+    if (!result.success) {
+      await notify('No se pudo guardar el horario. Revisa la conexión con Supabase.', 'Ajustes')
+      return
+    }
+
+    setDeviceData((current) => ({
+      ...current,
+      device: { ...current.device, nightStart, nightEnd },
+    }))
+    await notify('Horario de bloqueo actualizado', 'Ajustes')
+  }
+
   const displayName = profile.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Usuario'
 
   const activeMedication = useMemo(() => {
@@ -421,7 +444,7 @@ function App() {
       />
     )
     if (active === 'history') return <HistoryView events={deviceData.dispenseEvents || []} onNavigate={setActive} />
-    return <SettingsView device={deviceData.device} profile={profile} profileSaving={profileSaving} onSaveProfile={saveProfile} notify={notify} />
+    return <SettingsView device={deviceData.device} profile={profile} profileSaving={profileSaving} deviceSettingsSaving={deviceSettingsSaving} onSaveProfile={saveProfile} onSaveNightWindow={saveNightWindow} notify={notify} />
   }
 
   return (
@@ -566,13 +589,13 @@ function HomeView({ data, activeMedication, displayName, notify, onNavigate, onM
   }))
 
   const currentHour = new Date().getHours()
-  const nightBlocked = isRestrictedNightWindow(new Date())
+  const nightBlocked = isRestrictedNightWindow(new Date(), data.device.nightStart, data.device.nightEnd)
   const hasMedication = data.compartments.some((slot) => slot.active && slot.medicationName !== 'Sin asignar')
 
   return (
     <>
       <PageHeading eyebrow="Miércoles, 10 de septiembre" title={`Buenos días, ${displayName}`} action={{ label: 'Modo viaje', icon: Zap }} onAction={() => notify('Modo viaje configurado', 'DIM')} />
-      <section className="hardware-strip"><div className="hardware-copy"><span className="live-label"><span className="live-dot" /> {data.connected ? 'EN VIVO' : 'INICIO'}</span><strong>{nightBlocked ? 'Horario nocturno bloqueado' : hasMedication ? 'Tu plan está preparado' : 'Tu espacio está listo para configurar'}</strong><small>{nightBlocked ? 'No se dispensan pastillas entre 00:00 y 06:00' : hasMedication ? `Última sincronización: ${currentHour}:00` : 'Añade tus medicamentos para empezar'}</small></div><div className="hardware-stats"><span><Wifi size={17} /> {data.device.wifiName || 'Wi-Fi sin configurar'}</span><span><Bluetooth size={17} /> Pulsera opcional</span><span><Zap size={17} /> {data.connected ? 'Conectado' : 'Sin conectar'}</span></div></section>
+      <section className="hardware-strip"><div className="hardware-copy"><span className="live-label"><span className="live-dot" /> {data.connected ? 'EN VIVO' : 'INICIO'}</span><strong>{nightBlocked ? 'Horario configurado: dispensación bloqueada' : hasMedication ? 'Tu plan está preparado' : 'Tu espacio está listo para configurar'}</strong><small>{nightBlocked ? `Bloqueo activo de ${data.device.nightStart} a ${data.device.nightEnd}` : hasMedication ? `Última sincronización: ${currentHour}:00` : 'Añade tus medicamentos para empezar'}</small></div><div className="hardware-stats"><span><Wifi size={17} /> {data.device.wifiName || 'Wi-Fi sin configurar'}</span><span><Bluetooth size={17} /> Pulsera opcional</span><span><Zap size={17} /> {data.connected ? 'Conectado' : 'Sin conectar'}</span></div></section>
       {!hasMedication && <GettingStarted onNavigate={onNavigate} />}
       <section className="next-dose-card"><div className="next-dose-top"><div><p className="eyebrow light">{activeMedication ? 'INTERVALO CONFIGURADO' : 'PRÓXIMA TOMA'} <span className="countdown">{activeMedication ? `CADA ${activeMedication.frequencyHours || '?'} H` : 'SIN PROGRAMAR'}</span></p><h2>{activeMedication ? activeMedication.medicationName.split(' ')[0] || 'Medicamento' : 'Sin' } <span>{activeMedication ? activeMedication.dose || 'configurado' : 'programación'}</span></h2><p className="dose-location"><span className="mini-led blue" /> Compartimento <b>#{String(activeMedication?.slot || 1).padStart(2, '0')}</b> · {activeMedication ? 'Activo' : 'Vacío'}</p></div><div className="dose-illustration"><PillVisual color="blue" size="large" /><PillVisual color="white" size="large" /></div></div><div className="dose-info"><div><strong>{activeMedication ? activeMedication.medicationName : 'Sin medicamento'}</strong><span>{activeMedication ? `${activeMedication.amount} pastillas · frecuencia informativa` : 'Configurar en dispensador'}</span></div></div></section>
       <section className="section-block"><div className="section-title"><div><p className="eyebrow">TU PROGRESO</p><h2>Agenda de hoy</h2></div><span className="progress-count">{rows.length} <small>tomas</small></span></div>{rows.length > 0 ? <><div className="progress-track"><span /></div><div className="timeline">{rows.map((dose, index) => <DoseRow key={`${dose.cart}-${dose.name}-${index}`} dose={dose} last={index === rows.length - 1} onAction={() => onMedicationDetail(dose.medication)} />)}</div></> : <p className="empty-inline">Tu agenda aparecerá aquí cuando configures un medicamento.</p>}</section>
@@ -602,7 +625,7 @@ function DispenserView({ data, formData, updateForm, saveConfiguration, loading,
   const [selectedSlot, setSelectedSlot] = useState(1)
   const totalStock = data.compartments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const activeCount = data.compartments.filter((item) => item.active && Number(item.amount) > 0).length
-  const blocked = isRestrictedNightWindow(new Date())
+  const blocked = isRestrictedNightWindow(new Date(), data.device.nightStart, data.device.nightEnd)
   const selectedCompartment = formData.find((item) => item.slot === selectedSlot) || formData[0]
 
   return (
@@ -630,7 +653,7 @@ function DispenserView({ data, formData, updateForm, saveConfiguration, loading,
             })}
             <div className="device-center"><HeartPulse size={21} /><small>DIM</small></div>
           </div>
-          <span className="device-caption"><span className="live-dot" /> {blocked ? 'Bloqueado entre 00:00 y 06:00' : data.connected ? 'Dispensador conectado' : 'Dispensador sin conectar'}</span>
+          <span className="device-caption"><span className="live-dot" /> {blocked ? `Bloqueado de ${data.device.nightStart} a ${data.device.nightEnd}` : data.connected ? 'Dispensador conectado' : 'Dispensador sin conectar'}</span>
         </div>
         <div className="stock-summary">
           <p className="eyebrow">ESTADO DEL STOCK</p>
@@ -738,12 +761,23 @@ function Event({ icon: Icon, tone, title, detail }) {
   return <div className="event-row"><div className={`event-icon ${tone}`}><Icon size={17} /></div><div><strong>{title}</strong><small>{detail}</small></div><ChevronRight size={16} /></div>
 }
 
-function SettingsView({ device, profile, profileSaving, onSaveProfile, notify }) {
+function SettingsView({ device, profile, profileSaving, deviceSettingsSaving, onSaveProfile, onSaveNightWindow, notify }) {
   const [fullName, setFullName] = useState(profile.full_name || '')
+  const [nightStart, setNightStart] = useState(device.nightStart || '00:00')
+  const [nightEnd, setNightEnd] = useState(device.nightEnd || '06:00')
 
   useEffect(() => setFullName(profile.full_name || ''), [profile.full_name])
+  useEffect(() => {
+    setNightStart(device.nightStart || '00:00')
+    setNightEnd(device.nightEnd || '06:00')
+  }, [device.nightStart, device.nightEnd])
 
-  return <><PageHeading eyebrow="Módulo 05" title="Ajustes" /><section className="profile-card"><div className="profile-avatar">{(profile.full_name || 'U').slice(0, 2).toUpperCase()}</div><div className="profile-details"><strong>{profile.full_name || 'Tu perfil'}</strong><span>{profile.email || 'Cuenta de usuario'}</span><label className="profile-name-field"><span>Nombre</span><input value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Tu nombre completo" /></label><button className="primary-button profile-save" type="button" disabled={profileSaving || !fullName.trim()} onClick={() => onSaveProfile(fullName)}>{profileSaving ? 'Guardando...' : 'Guardar perfil'}</button></div></section><div className="settings-group"><p className="eyebrow">RED DE CUIDADO</p><SettingRow icon={UserRound} title="Contactos de emergencia" detail="Aún no has añadido contactos" onClick={() => notify('La configuración de contactos estará disponible próximamente', 'DIM')} /><SettingRow icon={Bell} title="Alertas y tolerancia" detail="Sin configurar" onClick={() => notify('Las alertas se configurarán cuando añadas un tratamiento', 'DIM')} /></div><div className="settings-group"><p className="eyebrow">DISPOSITIVOS</p><SettingRow icon={Bluetooth} title="Pulsera wearable" detail="Sin conectar" onClick={() => notify('No hay una pulsera conectada', 'DIM')} /><SettingRow icon={Wifi} title="Red del dispensador" detail={`${device.wifiName || 'Sin configurar'} · ${device.connectionStatus || 'Sin conectar'}`} onClick={() => notify('Configura la red desde tu dispensador', 'DIM')} /></div><div className="settings-group"><p className="eyebrow">RECORDATORIOS</p><SettingRow icon={Mic} title="Mensaje de voz familiar" detail={device.voiceMessage || 'Sin configurar'} onClick={() => notify('Configura el mensaje de voz del dispensador', 'DIM')} /><SettingRow icon={Tablet} title="Intensidad y vibración" detail="Sin configurar" onClick={() => notify('Esta preferencia estará disponible al conectar el dispositivo', 'DIM')} /></div></>
+  const submitNightWindow = (event) => {
+    event.preventDefault()
+    onSaveNightWindow({ nightStart, nightEnd })
+  }
+
+  return <><PageHeading eyebrow="Módulo 05" title="Ajustes" /><section className="profile-card"><div className="profile-avatar">{(profile.full_name || 'U').slice(0, 2).toUpperCase()}</div><div className="profile-details"><strong>{profile.full_name || 'Tu perfil'}</strong><span>{profile.email || 'Cuenta de usuario'}</span><label className="profile-name-field"><span>Nombre</span><input value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Tu nombre completo" /></label><button className="primary-button profile-save" type="button" disabled={profileSaving || !fullName.trim()} onClick={() => onSaveProfile(fullName)}>{profileSaving ? 'Guardando...' : 'Guardar perfil'}</button></div></section><section className="night-window-panel"><div><p className="eyebrow">HORARIO DE BLOQUEO</p><h2>Evitar dispensación en este horario</h2><p>El intervalo puede cruzar medianoche. Si ambas horas son iguales, el bloqueo queda desactivado.</p></div><form className="night-window-form" onSubmit={submitNightWindow}><label><span>Desde</span><input type="time" value={nightStart} onChange={(event) => setNightStart(event.target.value)} required /></label><label><span>Hasta</span><input type="time" value={nightEnd} onChange={(event) => setNightEnd(event.target.value)} required /></label><button className="primary-button" type="submit" disabled={deviceSettingsSaving}>{deviceSettingsSaving ? 'Guardando...' : 'Guardar horario'}</button></form></section><div className="settings-group"><p className="eyebrow">RED DE CUIDADO</p><SettingRow icon={UserRound} title="Contactos de emergencia" detail="Aún no has añadido contactos" onClick={() => notify('La configuración de contactos estará disponible próximamente', 'DIM')} /><SettingRow icon={Bell} title="Alertas y tolerancia" detail="Sin configurar" onClick={() => notify('Las alertas se configurarán cuando añadas un tratamiento', 'DIM')} /></div><div className="settings-group"><p className="eyebrow">DISPOSITIVOS</p><SettingRow icon={Bluetooth} title="Pulsera wearable" detail="Sin conectar" onClick={() => notify('No hay una pulsera conectada', 'DIM')} /><SettingRow icon={Wifi} title="Red del dispensador" detail={`${device.wifiName || 'Sin configurar'} · ${device.connectionStatus || 'Sin conectar'}`} onClick={() => notify('Configura la red desde tu dispensador', 'DIM')} /></div><div className="settings-group"><p className="eyebrow">RECORDATORIOS</p><SettingRow icon={Mic} title="Mensaje de voz familiar" detail={device.voiceMessage || 'Sin configurar'} onClick={() => notify('Configura el mensaje de voz del dispensador', 'DIM')} /><SettingRow icon={Tablet} title="Intensidad y vibración" detail="Sin configurar" onClick={() => notify('Esta preferencia estará disponible al conectar el dispositivo', 'DIM')} /></div></>
 }
 
 function SettingRow({ icon: Icon, title, detail, connected, onClick }) {

@@ -4,7 +4,7 @@
 
 Este documento describe los flujos que implementa actualmente el repositorio. La aplicacion web guarda perfiles, compartimentos, ajustes, notificaciones y eventos por usuario en Supabase. Los sketches DRV8825 son pruebas manuales de movimiento; no reciben ordenes desde la app ni dispensan medicamentos automaticamente.
 
-La frecuencia guardada por medicamento es un intervalo informativo en horas (1-168). No crea alarmas ni programa el motor. La ventana nocturna esta implementada como logica de software, pero el firmware servo actual usa `millis()` como si fuera hora real y no debe usarse para controlar dosis.
+La frecuencia guardada por medicamento es un intervalo informativo en horas (1-168). No crea alarmas ni programa el motor. Cada usuario puede elegir en Ajustes el horario en el que la app marca los compartimentos como no disponibles. Es una regla de software; no detiene fisicamente el motor. El firmware servo actual usa `millis()` como si fuera hora real y no debe usarse para controlar dosis.
 
 ## Arquitectura actual
 
@@ -148,4 +148,6 @@ La estructura anterior es una propuesta, no una reubicacion automatica de los ar
 - Ejecutar las migraciones SQL en el proyecto Supabase antes de usar las columnas `user_id` y `frequency_hours`.
 - `esp32/dispensador_esp32.ino` contiene valores de ejemplo, usa tiempo desde arranque como reloj y hace una accion de prueba al iniciar. No es firmware clinico ni debe conectarse a un dispensador real sin RTC, autenticacion por dispositivo, lectura de configuracion, limites y validacion fisica.
 - Los sketches DRV8825 solo aceptan comandos manuales por Serial. No consultan Supabase, no calculan proximas dosis y no deben considerarse un sistema de dispensacion automatica.
+- El horario personalizado se valida en la app, pero aun no se sincroniza con el firmware ni bloquea el motor fisicamente.
+- La clasificacion regulatoria y la normativa biomedica aplicable, incluida la posible categoria SaMD, deben revisarse antes de cualquier uso clinico.
 - Validacion web del repositorio: `npm test` y `npm run build`. Para compilar firmware se necesita Arduino IDE o Arduino CLI, la placa correcta y las librerias correspondientes.

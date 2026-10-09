@@ -4,6 +4,7 @@ import {
   isSlotAvailable,
   getSlotAngle,
   getNextAvailableSlot,
+  isWithinBlockedWindow,
   isValidMedicationFrequencyHours,
 } from './dispenserLogic'
 import { emptyCompartments, formatSupabaseAuthError, withSupabaseTimeout } from './supabase'
@@ -16,6 +17,18 @@ describe('dispenserLogic', () => {
     expect(isRestrictedNightWindow(new Date('2026-10-01T23:59:00'))).toBe(false)
   })
 
+  it('supports custom daytime and overnight blocking intervals', () => {
+    expect(isWithinBlockedWindow(new Date('2026-10-01T13:30:00'), '13:00', '16:00')).toBe(true)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T12:59:00'), '13:00', '16:00')).toBe(false)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T16:00:00'), '13:00', '16:00')).toBe(false)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T23:00:00'), '22:00', '06:00')).toBe(true)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T05:59:00'), '22:00', '06:00')).toBe(true)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T06:00:00'), '22:00', '06:00')).toBe(false)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T12:00:00'), '22:00', '06:00')).toBe(false)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T02:00:00'), 'bad', '06:00')).toBe(false)
+    expect(isWithinBlockedWindow(new Date('2026-10-01T02:00:00'), '02:00', '02:00')).toBe(false)
+  })
+
   it('calculates 45-degree slot positions and wraps every eight compartments', () => {
     expect(getSlotAngle(1)).toBe(0)
     expect(getSlotAngle(3)).toBe(90)
@@ -24,7 +37,7 @@ describe('dispenserLogic', () => {
     expect(getSlotAngle('not-a-slot')).toBe(0)
   })
 
-  it('rejects unavailable slots, blank medication names and the night window', () => {
+  it('rejects unavailable slots, blank medication names and configured blocked hours', () => {
     const date = new Date('2026-10-01T10:00:00')
     const configuredSlot = { slot: 1, medicationName: 'Metformina', amount: 1 }
 
@@ -33,6 +46,8 @@ describe('dispenserLogic', () => {
     expect(isSlotAvailable({ ...configuredSlot, amount: 0 }, 1, date)).toBe(false)
     expect(isSlotAvailable({ ...configuredSlot, medicationName: '  ' }, 1, date)).toBe(false)
     expect(isSlotAvailable(configuredSlot, 1, new Date('2026-10-01T02:00:00'))).toBe(false)
+    expect(isSlotAvailable(configuredSlot, 1, new Date('2026-10-01T13:30:00'), '13:00', '16:00')).toBe(false)
+    expect(isSlotAvailable(configuredSlot, 1, new Date('2026-10-01T12:59:00'), '13:00', '16:00')).toBe(true)
     expect(isSlotAvailable(null, 1, date)).toBe(false)
   })
 
