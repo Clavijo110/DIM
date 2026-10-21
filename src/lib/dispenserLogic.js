@@ -1,4 +1,5 @@
-export const TOTAL_COMPARTMENTS = 8
+export const TOTAL_CAROUSEL_POSITIONS = 8
+export const MEDICATION_COMPARTMENT_COUNT = 7
 export const NIGHT_WINDOW_START_HOUR = 0
 export const NIGHT_WINDOW_END_HOUR = 6
 
@@ -8,7 +9,7 @@ export function getSlotAngle(slotNumber) {
     return 0
   }
 
-  return ((slot - 1) % TOTAL_COMPARTMENTS) * 45
+  return ((slot - 1) % TOTAL_CAROUSEL_POSITIONS) * 45
 }
 
 export function isRestrictedNightWindow(date = new Date()) {
@@ -39,6 +40,15 @@ function parseTimeToMinutes(time) {
 export function isValidMedicationFrequencyHours(value) {
   const hours = Number(value)
   return Number.isInteger(hours) && hours >= 1 && hours <= 168
+}
+
+export function isValidMedicationDose(value) {
+  const dose = String(value ?? '')
+  return /^\d+$/.test(dose) && Number.isSafeInteger(Number(dose)) && Number(dose) > 0
+}
+
+export function isValidMedicationStartTime(value) {
+  return typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
 }
 
 export function isSlotAvailable(slotConfig, slotNumber, date = new Date(), nightStart = '00:00', nightEnd = '06:00') {

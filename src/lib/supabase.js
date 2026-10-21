@@ -2,6 +2,17 @@ import { createClient } from '@supabase/supabase-js'
 
 export const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 export const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+export const SUPABASE_REQUEST_TIMEOUT_MS = 30000
+export const SUPABASE_SESSION_TIMEOUT_MS = 30000
+
+function fetchWithTimeout(input, options = {}) {
+  const timeoutSignal = AbortSignal.timeout(SUPABASE_REQUEST_TIMEOUT_MS)
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal
+
+  return globalThis.fetch(input, { ...options, signal })
+}
 
 export const supabase = supabaseUrl && supabaseAnonKey
   ? createClient(supabaseUrl, supabaseAnonKey, {
@@ -10,11 +21,14 @@ export const supabase = supabaseUrl && supabaseAnonKey
         autoRefreshToken: true,
         detectSessionInUrl: true,
       },
-      global: { headers: { 'x-application': 'dim-dispensador' } },
+      global: {
+        headers: { 'x-application': 'dim-dispensador' },
+        fetch: fetchWithTimeout,
+      },
     })
   : null
 
-export function withSupabaseTimeout(promise, timeoutMs = 12000, message = 'Supabase tardó demasiado en responder') {
+export function withSupabaseTimeout(promise, timeoutMs = SUPABASE_REQUEST_TIMEOUT_MS, message = 'Supabase tardó demasiado en responder') {
   return new Promise((resolve, reject) => {
     const timeoutId = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs)
 
@@ -31,11 +45,15 @@ export function withSupabaseTimeout(promise, timeoutMs = 12000, message = 'Supab
   })
 }
 
-export const emptyCompartments = Array.from({ length: 8 }, (_, index) => ({
+export const emptyCompartments = Array.from({ length: 7 }, (_, index) => ({
   slot: index + 1,
   medicationName: 'Sin asignar',
   dose: '',
+  doseUnit: 'mg',
   frequencyHours: null,
+  pillsPerDose: 1,
+  startTime: '',
+  pillSize: null,
   amount: 0,
   active: false,
   notes: '',
@@ -51,6 +69,16 @@ export const defaultDeviceSettings = {
   nightEnd: '06:00',
 }
 
+function parseStoredDose(value) {
+  const match = /^\s*(\d+)\s*(mg|µg|g|UI)?\s*$/i.exec(String(value || ''))
+  if (!match) return { dose: '', legacyUnit: 'mg' }
+  const unit = match[2]?.toLowerCase()
+  return {
+    dose: match[1],
+    legacyUnit: unit === 'ui' ? 'UI' : unit || 'mg',
+  }
+}
+
 export function formatSupabaseAuthError(error) {
   const rawMessage = error?.message || ''
   const normalized = rawMessage.toLowerCase()
@@ -60,7 +88,7 @@ export function formatSupabaseAuthError(error) {
   }
 
   if (normalized.includes('redirect_to') || normalized.includes('redirect') || normalized.includes('not allowed')) {
-    return 'Falta configurar la URL de redirección en Supabase. Agrega http://localhost:5173 y tu dominio en Authentication > URL Configuration.'
+    return 'Falta configurar la URL de redirección en Supabase. Agrega http://localhost:5175/ y tu dominio en Authentication > URL Configuration.'
   }
 
   if (normalized.includes('user already registered') || normalized.includes('already registered') || normalized.includes('already exists') || normalized.includes('duplicate')) {
@@ -68,15 +96,20 @@ export function formatSupabaseAuthError(error) {
   }
 
   if (normalized.includes('invalid login credentials')) {
-    return 'Credenciales inválidas. Revisa el correo y la contraseña.'
+    return 'Credenciales incorrectas. Revisa tu correo y contraseña.'
   }
 
   if (normalized.includes('email not confirmed') || normalized.includes('confirm your email')) {
     return 'La cuenta se creó correctamente, pero primero debes confirmar tu correo antes de entrar.'
   }
 
-  if (normalized.includes('timeout') || normalized.includes('too long') || normalized.includes('tardó demasiado')) {
-    return 'Supabase no respondió a tiempo. Revisa tu conexión y la URL del proyecto en .env; la app te permitirá intentarlo otra vez.'
+  if (normalized.includes('email rate limit') || normalized.includes('email sending')) {
+    return 'Supabase no pudo enviar el correo. Revisa el proveedor de correo y sus límites.'
+  }
+
+  if (normalized.includes('timeout') || normalized.includes('too long') || normalized.includes('tardó demasiado')
+      || normalized.includes('timed out') || normalized.includes('aborterror') || normalized.includes('timeouterror')) {
+    return 'Supabase no respondió en 30 segundos. Comprueba la conexión a Internet e inténtalo de nuevo.'
   }
 
   if (normalized.includes('password')) {
@@ -84,6 +117,48 @@ export function formatSupabaseAuthError(error) {
   }
 
   return rawMessage || 'No se pudo completar la autenticación.'
+}
+
+export async function signUpWithEmail({ email, password, fullName }) {
+  if (!supabase) {
+    return { data: null, error: new Error('Supabase no está configurado') }
+  }
+
+  const redirectBase = typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : 'http://localhost:5175'
+
+  return withSupabaseTimeout(supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo: `${redirectBase}/`,
+      data: { full_name: fullName || email },
+    },
+  }), SUPABASE_REQUEST_TIMEOUT_MS)
+}
+
+export async function signInWithEmail({ email, password }) {
+  if (!supabase) {
+    return { data: null, error: new Error('Supabase no está configurado') }
+  }
+
+  return withSupabaseTimeout(supabase.auth.signInWithPassword({ email, password }), SUPABASE_REQUEST_TIMEOUT_MS)
+}
+
+export async function sendPasswordResetEmail(email) {
+  if (!supabase) {
+    return { data: null, error: new Error('Supabase no está configurado') }
+  }
+
+  const redirectTo = typeof window !== 'undefined' && window.location?.origin
+    ? `${window.location.origin}/`
+    : undefined
+
+  return withSupabaseTimeout(
+    supabase.auth.resetPasswordForEmail(email, { redirectTo }),
+    SUPABASE_REQUEST_TIMEOUT_MS,
+  )
 }
 
 export async function fetchDispenserState(userId) {
@@ -103,7 +178,7 @@ export async function fetchDispenserState(userId) {
       supabase.from('dispenser_settings').select('*').eq('user_id', userId).maybeSingle(),
       supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(5),
       supabase.from('dispense_events').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(20),
-    ]), 12000)
+    ]), SUPABASE_REQUEST_TIMEOUT_MS)
 
     if (compartmentError) {
       console.warn('Error al cargar compartimentos:', compartmentError)
@@ -113,16 +188,23 @@ export async function fetchDispenserState(userId) {
     }
 
     return {
-      compartments: [...(compartmentsData || []).map((item) => ({
-        slot: Number(item.slot),
-        medicationName: item.medication_name || 'Sin asignar',
-        dose: item.dose || '',
-        frequencyHours: item.frequency_hours == null ? null : Number(item.frequency_hours),
-        amount: Number(item.amount || 0),
-        active: Boolean(item.active),
-        notes: item.notes || '',
-        rotation: Number(item.rotation ?? item.slot - 1),
-      })), ...emptyCompartments.filter((empty) => !(compartmentsData || []).some((item) => Number(item.slot) === empty.slot))].sort((a, b) => a.slot - b.slot),
+      compartments: [...(compartmentsData || []).filter((item) => Number(item.slot) >= 1 && Number(item.slot) <= 7).map((item) => {
+        const parsedDose = parseStoredDose(item.dose)
+        return {
+          slot: Number(item.slot),
+          medicationName: item.medication_name || 'Sin asignar',
+          dose: parsedDose.dose,
+          doseUnit: ['mg', 'µg', 'g', 'UI'].includes(item.dose_unit) ? item.dose_unit : parsedDose.legacyUnit,
+          frequencyHours: item.frequency_hours == null ? null : Number(item.frequency_hours),
+          pillsPerDose: Number(item.pills_per_dose || 1),
+          startTime: item.start_time || '',
+          pillSize: item.pill_size || null,
+          amount: Number(item.amount || 0),
+          active: Boolean(item.active),
+          notes: item.notes || '',
+          rotation: Number(item.rotation ?? item.slot - 1),
+        }
+      }), ...emptyCompartments.filter((empty) => !(compartmentsData || []).some((item) => Number(item.slot) === empty.slot))].sort((a, b) => a.slot - b.slot),
       device: deviceData ? {
         name: deviceData.name || '',
         wifiName: deviceData.wifi_name || '',
@@ -161,7 +243,11 @@ export async function upsertCompartments(compartments, userId) {
     slot: Number(item.slot),
     medication_name: item.medicationName || 'Sin asignar',
     dose: item.dose || '',
+    dose_unit: item.doseUnit || 'mg',
     frequency_hours: item.frequencyHours == null ? null : Number(item.frequencyHours),
+    pills_per_dose: Number(item.pillsPerDose || 1),
+    start_time: item.startTime || null,
+    pill_size: item.pillSize || null,
     amount: Number(item.amount || 0),
     active: Boolean(item.active),
     notes: item.notes || '',
@@ -205,35 +291,6 @@ export async function upsertDeviceSettings(settings = defaultDeviceSettings, use
   }
 
   return { success: true, localOnly: false, data }
-}
-
-export async function signUpWithEmail({ email, password, fullName }) {
-  if (!supabase) {
-    return { data: null, error: new Error('Supabase no está configurado') }
-  }
-
-  const redirectBase = typeof window !== 'undefined' && window.location?.origin
-    ? window.location.origin
-    : 'http://localhost:5173'
-
-  return withSupabaseTimeout(supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      emailRedirectTo: `${redirectBase}/`,
-      data: {
-        full_name: fullName || email,
-      },
-    },
-  }), 12000)
-}
-
-export async function signInWithEmail({ email, password }) {
-  if (!supabase) {
-    return { data: null, error: new Error('Supabase no está configurado') }
-  }
-
-  return withSupabaseTimeout(supabase.auth.signInWithPassword({ email, password }), 12000)
 }
 
 export async function signOut() {

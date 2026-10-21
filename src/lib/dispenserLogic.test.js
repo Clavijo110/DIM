@@ -6,6 +6,8 @@ import {
   getNextAvailableSlot,
   isWithinBlockedWindow,
   isValidMedicationFrequencyHours,
+  isValidMedicationDose,
+  isValidMedicationStartTime,
 } from './dispenserLogic'
 import { emptyCompartments, formatSupabaseAuthError, withSupabaseTimeout } from './supabase'
 
@@ -29,7 +31,7 @@ describe('dispenserLogic', () => {
     expect(isWithinBlockedWindow(new Date('2026-10-01T02:00:00'), '02:00', '02:00')).toBe(false)
   })
 
-  it('calculates 45-degree slot positions and wraps every eight compartments', () => {
+  it('calculates 45-degree carousel positions across eight physical positions', () => {
     expect(getSlotAngle(1)).toBe(0)
     expect(getSlotAngle(3)).toBe(90)
     expect(getSlotAngle(8)).toBe(315)
@@ -62,6 +64,19 @@ describe('dispenserLogic', () => {
     expect(isValidMedicationFrequencyHours(null)).toBe(false)
   })
 
+  it('accepts only positive integer doses and valid 24-hour start times', () => {
+    expect(isValidMedicationDose('1')).toBe(true)
+    expect(isValidMedicationDose('850')).toBe(true)
+    expect(isValidMedicationDose('1.5')).toBe(false)
+    expect(isValidMedicationDose('1e3')).toBe(false)
+    expect(isValidMedicationDose('0')).toBe(false)
+    expect(isValidMedicationDose('')).toBe(false)
+    expect(isValidMedicationStartTime('08:30')).toBe(true)
+    expect(isValidMedicationStartTime('23:59')).toBe(true)
+    expect(isValidMedicationStartTime('24:00')).toBe(false)
+    expect(isValidMedicationStartTime('8:30')).toBe(false)
+  })
+
   it('returns the next slot in normal order', () => {
     const slots = [
       { slot: 1, medicationName: 'Metformina', amount: 1 },
@@ -80,14 +95,15 @@ describe('dispenserLogic', () => {
     expect(formatSupabaseAuthError({ message: 'redirect_to not allowed' })).toContain('URL')
     expect(formatSupabaseAuthError({ message: 'User already registered' })).toContain('ya existe')
     expect(formatSupabaseAuthError({ message: 'Invalid login credentials' })).toContain('Credenciales')
+    expect(formatSupabaseAuthError({ message: 'Email rate limit exceeded' })).toContain('correo')
     expect(formatSupabaseAuthError({ message: 'Email not confirmed' })).toContain('confirmar')
     expect(formatSupabaseAuthError({ message: 'Database timeout' })).toContain('no respondió')
     expect(formatSupabaseAuthError({ message: '' })).toContain('autenticación')
   })
 
-  it('starts every account with eight unconfigured compartments', () => {
-    expect(emptyCompartments).toHaveLength(8)
-    expect(emptyCompartments.every((slot) => slot.medicationName === 'Sin asignar' && slot.frequencyHours === null && slot.amount === 0 && !slot.active)).toBe(true)
+  it('starts every account with seven unconfigured medication compartments', () => {
+    expect(emptyCompartments).toHaveLength(7)
+    expect(emptyCompartments.every((slot) => slot.medicationName === 'Sin asignar' && slot.frequencyHours === null && slot.pillsPerDose === 1 && slot.amount === 0 && slot.doseUnit === 'mg' && !slot.active)).toBe(true)
   })
 
   it('ends a stalled Supabase request with a timeout error', async () => {
