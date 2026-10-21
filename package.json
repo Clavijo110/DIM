@@ -7,9 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "android:sync": "npm run build && cap sync android",
+    "android:apk": "npm run android:sync && cd android && gradlew assembleDebug",
+    "android:install": "npm run android:sync && cap run android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
     "@supabase/supabase-js": "^2.117.2",
     "@vitejs/plugin-react": "latest",
     "lucide-react": "latest",
@@ -17,5 +22,8 @@
     "react-dom": "latest",
     "vite": "latest",
     "vitest": "^5.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3"
   }
 }

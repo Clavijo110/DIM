@@ -1,7 +1,14 @@
 node_modules/
 dist/
+firmware/**/.pio/
+firmware/esp32s3/dispensador/include/DeviceSecrets.h
+android/.gradle/
+android/local.properties
+android/**/build/
 .env
 .env.*
 !.env.example
 *.zip
 .DS_Store
+/CONTEXTO_DIM_2026-10-20.md
+/firmware_compilado/

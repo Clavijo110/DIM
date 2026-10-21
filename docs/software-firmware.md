@@ -2,9 +2,9 @@
 
 ## Alcance y estado
 
-Este documento describe los flujos que implementa actualmente el repositorio. La aplicacion web guarda perfiles, compartimentos, ajustes, notificaciones y eventos por usuario en Supabase. Los sketches DRV8825 son pruebas manuales de movimiento; no reciben ordenes desde la app ni dispensan medicamentos automaticamente.
+La aplicacion web guarda perfiles, siete compartimentos, ajustes, notificaciones y eventos por usuario en Supabase. El firmware ESP32-S3 integrado expone controles HTTP locales autenticados para el carrusel, el motor receptor, luces, prueba de audio, sensores y DS3231. La agenda configurada por medicamento se copia al almacenamiento persistente del ESP32 para ejecutarse aunque la app este cerrada.
 
-La frecuencia guardada por medicamento es un intervalo informativo en horas (1-168). No crea alarmas ni programa el motor. Cada usuario puede elegir en Ajustes el horario en el que la app marca los compartimentos como no disponibles. Es una regla de software; no detiene fisicamente el motor. El firmware servo actual usa `millis()` como si fuera hora real y no debe usarse para controlar dosis.
+Cada agenda tiene nombre, tamaño de pastilla, hora inicial, intervalo de 1-168 horas, cantidad por toma e inventario local. Visto desde arriba, la secuencia del disco es horaria: grande en HOME, pequeña a 90°, mediana a 180° y cerrado a 270°. El firmware ejecuta carrusel → alineación de 22,5° → selección de cavidad → retorno/vibración de 2 s → carrusel a HOME → media vuelta horaria del disco. Cuenta los flancos de caída del sensor; si no detecta una pastilla, intenta volver a cerrado, detiene la toma y bloquea el compartimento sin reintentar. Solo descuenta el inventario después de completar y detectar toda la toma. Las dosis atrasadas más de cinco minutos se omiten. La app reconcilia el stock al volver a conectarse. El horario de bloqueo de la app no es un interbloqueo físico para la agenda. El sensor confirma un paso por su haz, no que la pastilla haya sido ingerida. El panel local ofrece pruebas manuales de los motores, Q0/Q1-Q7 y una pista de audio.
 
 ## Arquitectura actual
 
@@ -15,10 +15,21 @@ flowchart LR
     Client --> Auth[Supabase Auth]
     Client --> REST[Supabase REST API]
     REST --> DB[(Postgres\nRLS por user_id)]
-    Stepper[Sketch de prueba DRV8825\nESP32 o Arduino Uno] --> Motor[Motor paso a paso]
-    Legacy[Sketch ESP32 con servo\nprototipo legacy] --> Servo[Servo y buzzer]
-    Stepper -. no conectado a DIM web .-> Browser
-    Legacy -. no lee la frecuencia ni la configuracion web .-> REST
+    Browser --> DeviceClient[Cliente HTTP local\nsrc/lib/deviceApi.js]
+    DeviceClient -->|Wi-Fi + clave local| Firmware[API HTTP ESP32-S3\nfirmware/esp32s3/dispensador]
+    Firmware --> Schedule[Agenda persistente\nPreferences + RTC]
+    Schedule --> Dispense[Orquestador de dispensacion]
+    Dispense --> Carousel
+    Dispense --> Feeder
+    Dispense --> Indicator[74HC595 y luces]
+    Firmware --> Carousel[Servicio carrusel + sensor HOME]
+    Firmware --> Feeder[Servicio receptor + sensor HOME]
+    Firmware --> RTC[DS3231 + LCD próxima toma]
+    Firmware --> OTA[ArduinoOTA por AP Wi-Fi]
+    Carousel --> Motor[DRV8825 + NEMA 17]
+    Feeder --> Drop[28BYJ-48 + ULN2003]
+    Firmware --> Sensor[Sensor de paso de pastilla]
+    Firmware -->|confirmacion de ciclo| Browser
 ```
 
 ## Flujo de inicio y autenticacion
@@ -52,9 +63,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Start([Abrir Mi dispensador]) --> Select[Elegir compartimento 1-8]
-    Select --> Form[Introducir medicamento, dosis, frecuencia y cantidad]
-    Form --> Validate{Nombre, cantidad y frecuencia\nvalida de 1 a 168 h?}
+    Start([Abrir Mi dispensador]) --> Select[Elegir compartimento 1-7]
+    Select --> Form[Introducir medicamento, dosis entera y unidad,\nhora, intervalo, receptor y cantidad]
+    Form --> Validate{Datos, tamaño y agenda\nvalidos?}
     Validate -- No --> ValidationError[Mostrar indicacion del campo pendiente]
     ValidationError --> Form
     Validate -- Si --> Save[Upsert de compartimentos\ncon user_id y slot]
@@ -69,31 +80,12 @@ flowchart TD
     Partial --> UI
     UI --> Treatments[Mostrar frecuencia e inventario\nen Tratamientos]
     UI --> History[Mostrar actividad en Historial]
+    UI --> Sync[Conectar ESP32, sincronizar RTC\ny activar agenda manualmente]
 ```
 
-## Flujo del sketch de prueba DRV8825
+## Sketches heredados
 
-```mermaid
-flowchart TD
-    Power([Encender placa]) --> Pins[Configurar pines del driver]
-    Pins --> Microstep[Seleccionar cuarto de paso\nM0 LOW, M1 HIGH, M2 LOW]
-    Microstep --> Enable[RESET y SLEEP HIGH\nesperar 2 ms, habilitar EN]
-    Enable --> Assume[Asumir posicion fisica actual = slot 1]
-    Assume --> Serial[Esperar comando serial]
-    Serial --> Command{Comando}
-    Command -- 1..8 --> Target[Calcular avance horario modulo 8]
-    Target --> Steps[Avanzar 100 micropasos por compartimento]
-    Steps --> Serial
-    Command -- n --> Next[Avanzar un compartimento]
-    Next --> Serial
-    Command -- r --> Revolution[Avanzar 800 micropasos]
-    Revolution --> Serial
-    Command -- z --> Zero[Marcar posicion actual como slot 1\nno mueve el motor]
-    Zero --> Serial
-    Command -- otro --> Serial
-```
-
-Con un motor de 200 pasos completos por vuelta, cuarto de paso produce 800 micropasos por vuelta. Ocho posiciones uniformes requieren 100 micropasos (45 grados) por compartimento. La velocidad configurada es una referencia; el tiempo real depende del motor, corriente, carga y fuente.
+Los sketches antiguos de Uno/ESP32 son solo pruebas aisladas y no forman parte de la secuencia integrada. El firmware actual usa 200 micropasos por posición de 45° para el carrusel y 1024 medios pasos aproximados por cuarto de vuelta del 28BYJ-48.
 
 ## Modulos y ubicacion del codigo
 
@@ -102,14 +94,15 @@ Con un motor de 200 pasos completos por vuelta, cuarto de paso produce 800 micro
 | Interfaz y flujo de pantallas | [`src/main.jsx`](../src/main.jsx) | Auth, estado de sesion, onboarding, configuracion y vistas. |
 | Acceso a Supabase | [`src/lib/supabase.js`](../src/lib/supabase.js) | Auth, consultas por usuario, guardado de compartimentos y eventos. |
 | Reglas locales | [`src/lib/dispenserLogic.js`](../src/lib/dispenserLogic.js) | Angulos, disponibilidad y bloqueo nocturno. |
+| API local del dispositivo | [`src/lib/deviceApi.js`](../src/lib/deviceApi.js) | Rutas versionadas, clave local y limites de posiciones/compartimentos. |
 | Esquema de base | [`database/schema.sql`](../database/schema.sql) | Tablas, claves y politicas RLS. |
-| Migraciones | [`database/migrate_user_scoping.sql`](../database/migrate_user_scoping.sql), [`database/migrate_medication_frequency.sql`](../database/migrate_medication_frequency.sql) | Actualizacion de proyectos Supabase ya creados. |
-| Prueba de motor para ESP32 | [`esp32/motor_paso_a_paso_drv8825.ino`](../esp32/motor_paso_a_paso_drv8825.ino) | Control manual serial del DRV8825; sin sensor ni agenda automatica. |
-| Prototipo ESP32 con servo | [`esp32/dispensador_esp32.ino`](../esp32/dispensador_esp32.ino) | Prototipo separado; requiere correcciones antes de uso real. |
-| Prueba de motor para Uno | [`arduino_uno/motor_drv8825_arduino_uno.ino`](../arduino_uno/motor_drv8825_arduino_uno.ino) | Control manual serial del DRV8825 en Arduino Uno. |
+| Migraciones | [`database/migrate_user_scoping.sql`](../database/migrate_user_scoping.sql), [`database/migrate_medication_frequency.sql`](../database/migrate_medication_frequency.sql), [`database/migrate_medication_pill_size.sql`](../database/migrate_medication_pill_size.sql) | Actualizacion de proyectos Supabase ya creados. |
+| Firmware integrado | [`firmware/esp32s3/dispensador`](../firmware/esp32s3/dispensador/README.md) | API HTTP, secuencia de dispensacion, luces, RTC, LCD y OTA para ESP32-S3. |
+| Pruebas heredadas ESP32 | [`firmware/legacy_esp32`](../firmware/legacy_esp32) | Sketches conservados; no son el firmware integrado. |
+| Prueba heredada Uno | [`firmware/arduino_uno`](../firmware/arduino_uno) | Sketch de control manual para Arduino Uno. |
 | Pruebas web | [`src/lib/dispenserLogic.test.js`](../src/lib/dispenserLogic.test.js) | Reglas de compartimentos, ventana nocturna y utilidades. |
 
-## Estructura recomendada del repositorio
+## Estructura del repositorio
 
 Mantener una sola fuente de verdad: la aplicacion en `src/`, SQL en `database/`, documentacion en `docs/` y firmware separado por placa. No copiar implementaciones completas dentro de la documentacion; los diagramas explican los flujos y los archivos de firmware contienen el codigo ejecutable.
 
@@ -127,27 +120,31 @@ DIM/
     migrate_user_scoping.sql
     migrate_medication_frequency.sql
   firmware/
-    esp32/
-      drv8825_test/
-        drv8825_test.ino
-      servo_prototype/
-        servo_prototype.ino
+    esp32s3/dispensador/
+      include/                 # configuracion y servicios
+      src/                     # API HTTP, motores, RTC y LCD
+      platformio.ini
+    legacy_esp32/              # pruebas anteriores
     arduino_uno/
-      drv8825_test/
-        drv8825_test.ino
+      motor_drv8825_arduino_uno.ino
   .env.example
   .gitignore
   package.json
 ```
 
-La estructura anterior es una propuesta, no una reubicacion automatica de los archivos actuales. Arduino IDE suele trabajar mas claramente cuando cada sketch tiene su propia carpeta y el `.ino` principal comparte el nombre de esa carpeta. Mantener sketches de placas distintas separados evita cargar por error el programa incorrecto.
+El firmware integrado se compila con PlatformIO desde su carpeta. Los sketches de prueba se mantienen aparte para evitar cargar por error un programa de placa distinta.
 
 ## Seguridad y pasos pendientes
 
 - No subir `.env`, claves privadas ni contrasenas de Wi-Fi al repositorio. Para Vite solo debe exponerse la clave anonima; nunca una `service_role`.
 - Ejecutar las migraciones SQL en el proyecto Supabase antes de usar las columnas `user_id` y `frequency_hours`.
-- `esp32/dispensador_esp32.ino` contiene valores de ejemplo, usa tiempo desde arranque como reloj y hace una accion de prueba al iniciar. No es firmware clinico ni debe conectarse a un dispensador real sin RTC, autenticacion por dispositivo, lectura de configuracion, limites y validacion fisica.
-- Los sketches DRV8825 solo aceptan comandos manuales por Serial. No consultan Supabase, no calculan proximas dosis y no deben considerarse un sistema de dispensacion automatica.
-- El horario personalizado se valida en la app, pero aun no se sincroniza con el firmware ni bloquea el motor fisicamente.
+- Cambia las credenciales Wi-Fi, la clave API y la clave del AP antes de cargar firmware; no expongas el puerto HTTP local a Internet.
+- GPIO46 controla EN del DRV8825 y es un pin de strap; el firmware lo inicializa deshabilitado lo antes posible, pero sin un pull-up externo el driver puede quedar habilitado durante reset. Verifica el arranque con el mecanismo despejado.
+- El sensor de caída se cuenta por flanco; un fallo detiene y bloquea la toma sin reintentar. Valida falsos positivos/negativos y tiempo de caída con pastillas ficticias antes de conectar medicamentos.
+- El panel permite probar manualmente cualquier pista del DFPlayer (1–3000), pero no se asignan automáticamente mensajes a eventos hasta que se definan los números de pista y la organización de la tarjeta SD.
+- ArduinoOTA requiere una tabla de particiones con dos espacios OTA y solo puede usarse tras instalar una primera versión OTA-capaz.
+- Para conectar la app, el ESP32 debe ejecutar el firmware DIM compatible. Si otro firmware responde con 404 o no implementa la API local, actualízalo por su OTA actual (si es compatible con ArduinoOTA); no hace falta USB si el cargador OTA existente acepta esta imagen.
+- La API HTTP local requiere que telefono y ESP32 compartan red. Un sitio HTTPS no puede llamar directamente al ESP32 por HTTP en navegadores que bloquean contenido mixto.
+- El horario personalizado se valida en la app, pero no es un interbloqueo fisico del motor.
 - La clasificacion regulatoria y la normativa biomedica aplicable, incluida la posible categoria SaMD, deben revisarse antes de cualquier uso clinico.
-- Validacion web del repositorio: `npm test` y `npm run build`. Para compilar firmware se necesita Arduino IDE o Arduino CLI, la placa correcta y las librerias correspondientes.
+- Validacion web: `npm test` y `npm run build`. Para el firmware integrado se necesita PlatformIO y una ESP32-S3.

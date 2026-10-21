@@ -1,0 +1,8 @@
+{
+  "appId": "com.careloop.dim",
+  "appName": "DIM Dispensador",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  }
+}
